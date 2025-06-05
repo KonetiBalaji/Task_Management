@@ -1,9 +1,14 @@
-import { ColumnType, TaskPriority } from '../types';
+import { TaskPriority, TaskStatus } from '../types';
+
+interface ColumnType {
+  id: TaskStatus;
+  title: string;
+}
 
 export const COLUMNS: ColumnType[] = [
   { id: 'todo', title: 'To Do' },
-  { id: 'inprogress', title: 'In Progress' },
-  { id: 'done', title: 'Done' },
+  { id: 'in-progress', title: 'In Progress' },
+  { id: 'completed', title: 'Completed' },
 ];
 
 export const PRIORITIES: { value: TaskPriority; label: string }[] = [

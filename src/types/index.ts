@@ -1,8 +1,10 @@
 import { Timestamp } from 'firebase/firestore';
 
+export type UserRole = 'member' | 'admin' | 'owner';
+
 export type TaskPriority = 'low' | 'medium' | 'high';
-export type TaskStatus = 'todo' | 'inprogress' | 'done';
-export type UserRole = 'owner' | 'editor' | 'viewer';
+
+export type TaskStatus = 'todo' | 'in-progress' | 'completed';
 
 export interface Subtask {
   id: string;
