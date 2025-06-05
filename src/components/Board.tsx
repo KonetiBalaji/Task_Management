@@ -68,24 +68,6 @@ const Board: FC<BoardProps> = ({
 }) => {
   const [draggedTask, setDraggedTask] = useState<Task | null>(null);
 
-  const handleDragStart = (e: DragEvent<HTMLDivElement>, task: Task) => {
-    setDraggedTask(task);
-    e.dataTransfer.setData('text/plain', task.id);
-  };
-
-  const handleDragOver = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-  };
-
-  const handleDrop = async (e: DragEvent<HTMLDivElement>, status: TaskStatus) => {
-    e.preventDefault();
-    if (!draggedTask) return;
-
-    const taskRef = doc(db, 'boards', boardId, 'tasks', draggedTask.id);
-    await updateDoc(taskRef, { status });
-    setDraggedTask(null);
-  };
-
   const onDragEnd = (result: DropResult) => {
     const { destination, source, draggableId } = result;
 
@@ -105,6 +87,10 @@ const Board: FC<BoardProps> = ({
 
     onUpdateTaskStatus(taskId, newStatus);
     setDraggedTask(null);
+  };
+
+  const handleDragStart = (e: DragEvent<HTMLDivElement>, task: Task) => {
+    setDraggedTask(task);
   };
 
   const getTasksByStatus = (status: TaskStatus) => {

@@ -4,13 +4,13 @@ import { useBoard } from './hooks/useBoard';
 import { useTask } from './hooks/useTask';
 import Login from './components/Login';
 import Board from './components/Board';
-import { Task, Subtask, TaskStatus, TaskPriority } from './types';
+import { Task, Subtask, TaskPriority } from './types';
 // We can add routing here later for Dashboard and other pages
 
 function App() {
   const { user, loading: authLoading } = useAuth();
   const boardId = "YOUR_BOARD_ID"; // Replace with actual board ID logic later
-  const { tasks, loading: boardLoading, error: boardError, updateTaskStatus, getTasksByStatus } = useBoard(boardId);
+  const { tasks, loading: boardLoading, error: boardError, updateTaskStatus } = useBoard(boardId);
   const { loading: taskLoading, error: taskError, createTask, updateTask, deleteTask, addSubtask, updateSubtask, deleteSubtask, toggleSubtask } = useTask(boardId);
 
   // Add state for TaskForm inputs to lift them up to App.tsx
