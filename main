@@ -1,0 +1,1178 @@
+import React, { useState, useEffect, useRef, FC, FormEvent, DragEvent, ChangeEvent, KeyboardEvent, useMemo } from 'react';
+import { initializeApp, FirebaseApp } from 'firebase/app';
+import { 
+    getAuth, 
+    signInAnonymously, 
+    signInWithCustomToken, 
+    onAuthStateChanged, 
+    Auth, 
+    User,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut
+} from 'firebase/auth';
+import { 
+    getFirestore, 
+    doc, 
+    setDoc, 
+    onSnapshot, 
+    collection, 
+    deleteDoc, 
+    updateDoc, 
+    serverTimestamp, 
+    Firestore,
+    Timestamp,
+    Unsubscribe,
+    writeBatch,
+    query,
+    where,
+    getDocs,
+    arrayUnion,
+    arrayRemove
+} from 'firebase/firestore';
+import { 
+    getStorage, 
+    ref as storageRef, 
+    uploadBytes, 
+    getDownloadURL, 
+    deleteObject, 
+    Storage 
+} from "firebase/storage";
+import { setLogLevel } from "firebase/app";
+
+// --- Type Definitions ---
+type TaskPriority = 'low' | 'medium' | 'high';
+type TaskStatus = 'todo' | 'inprogress' | 'done';
+type UserRole = 'owner' | 'editor' | 'viewer';
+
+interface Subtask {
+  id: string;
+  title: string;
+  completed: boolean;
+}
+
+interface Attachment {
+  id: string;
+  name: string;
+  url: string;
+  type: string;
+  createdAt: Timestamp;
+  path: string;
+}
+
+interface BoardMember {
+    uid: string;
+    email?: string; 
+    role: UserRole;
+}
+
+interface BoardDoc {
+    id: string;
+    name: string;
+    ownerId: string;
+    members: Record<string, UserRole>; 
+    createdAt: Timestamp;
+}
+
+interface Task {
+  id: string;
+  boardId: string; 
+  title: string;
+  description?: string;
+  status: TaskStatus;
+  timestamp?: Timestamp;
+  dueDate?: string; 
+  priority?: TaskPriority;
+  subtasks: Subtask[];
+  attachments: Attachment[];
+  createdBy?: string; 
+}
+
+interface ColumnType {
+  id: TaskStatus;
+  title: string;
+}
+
+// --- Icon Components ---
+const PlusIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>;
+const TrashIcon: FC<{className?: string}> = ({className = "w-4 h-4"}) => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}><path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12.576 0c-.342.052-.682.107-1.022.166m1.022-.165L5.88 19.673a2.25 2.25 0 0 0 2.244 2.077h8.132a2.25 2.25 0 0 0 2.244-2.077L19.228 5.79m-14.456 0a48.108 48.108 0 0 1 3.478-.397m0 0a48.108 48.108 0 0 1 6.036 0m-6.036 0A48.108 48.108 0 0 1 4.772 5.79m14.456 0L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79" /></svg>;
+const LogoutIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" /></svg>;
+const UploadIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" /></svg>;
+const PaperClipIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 mr-1"><path strokeLinecap="round" strokeLinejoin="round" d="m18.375 12.739-7.693 7.693a4.5 4.5 0 0 1-6.364-6.364l10.94-10.94A3.375 3.375 0 1 1 18.374 7.3l-4.243 4.243a2.121 2.121 0 0 0 3 3l7.693-7.693a.75.75 0 0 0-1.06-1.06l-7.693 7.693a1.125 1.125 0 0 1-1.59 0l-4.243-4.243a3.375 3.375 0 0 1 4.774-4.774l10.94 10.94a6 6 0 1 1-8.486 8.486L6.375 16.485a.75.75 0 0 1-1.06-1.06l7.693-7.693Z" /></svg>;
+const DocumentArrowDownIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 mr-2"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>;
+const UsersIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 0 0 3.741-.479 3 3 0 0 0-4.682-2.72m.247-3.292A7.5 7.5 0 0 0 10.5 4.5v8.25c0 .398.07.786.207 1.143M16.5 10.5a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0Zm-3.75 0a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" /></svg>;
+const ChartBarIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 0 1 3 19.875v-6.75ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V8.625ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" /></svg>;
+const LightBulbIcon: FC = () => <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 mr-1"><path strokeLinecap="round" strokeLinejoin="round" d="M12 18v-5.25m0 0a6.01 6.01 0 0 0 1.5-.189m-1.5.189a6.01 6.01 0 0 1-1.5-.189m3 .378A6.011 6.011 0 0 1 12 6.75c-2.176 0-4.205.962-5.523 2.575C5.106 10.956 4.5 12.908 4.5 15s.606 4.044 1.977 5.675A6.003 6.003 0 0 1 12 18.75m0-2.25A6.007 6.007 0 0 0 12 6.75M12 18.75a6.003 6.003 0 0 0 5.523-2.575C18.894 14.544 19.5 12.592 19.5 10S18.894 5.456 17.523 3.825A6.004 6.004 0 0 0 12 1.5" /></svg>;
+
+// --- Constants ---
+const COLUMNS: ColumnType[] = [
+  { id: 'todo', title: 'To Do' },
+  { id: 'inprogress', title: 'In Progress' },
+  { id: 'done', title: 'Done' },
+];
+const PRIORITIES: { value: TaskPriority; label: string }[] = [
+    { value: 'low', label: 'Low' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'high', label: 'High' },
+];
+
+// --- TaskForm Component ---
+interface TaskFormProps {
+  handleAddTask: (e: FormEvent<HTMLFormElement>) => Promise<void>;
+  getAISubtaskSuggestions: (taskTitle: string, taskDesc: string) => Promise<void>;
+  isSuggestingSubtasks: boolean;
+  suggestedSubtasks: string[];
+  setSuggestedSubtasks: React.Dispatch<React.SetStateAction<string[]>>;
+  newTaskTitle: string; setNewTaskTitle: React.Dispatch<React.SetStateAction<string>>;
+  newTaskDesc: string; setNewTaskDesc: React.Dispatch<React.SetStateAction<string>>;
+  newDueDate: string; setNewDueDate: React.Dispatch<React.SetStateAction<string>>;
+  newPriority: TaskPriority; setNewPriority: React.Dispatch<React.SetStateAction<TaskPriority>>;
+  userId: string | null; isLoading: boolean;
+}
+const TaskForm: FC<TaskFormProps> = ({ 
+    handleAddTask, getAISubtaskSuggestions, isSuggestingSubtasks, suggestedSubtasks, setSuggestedSubtasks,
+    newTaskTitle, setNewTaskTitle, newTaskDesc, setNewTaskDesc,
+    newDueDate, setNewDueDate, newPriority, setNewPriority,
+    userId, isLoading 
+}) => {
+  return (
+    <form onSubmit={handleAddTask} className="mb-8 p-6 bg-slate-800/50 backdrop-blur-md rounded-xl shadow-2xl max-w-2xl mx-auto">
+      <h2 className="text-2xl font-semibold mb-4 text-sky-300">Add New Task</h2>
+      <div className="mb-4">
+        <label htmlFor="newTaskTitle" className="block text-sm font-medium text-slate-300 mb-1">Title</label>
+        <input id="newTaskTitle" type="text" value={newTaskTitle} onChange={(e) => setNewTaskTitle(e.target.value)} placeholder="Enter task title" className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors" required />
+      </div>
+      <div className="mb-4">
+        <label htmlFor="newTaskDesc" className="block text-sm font-medium text-slate-300 mb-1">Description</label>
+        <textarea id="newTaskDesc" value={newTaskDesc} onChange={(e) => setNewTaskDesc(e.target.value)} placeholder="Enter task description" rows={3} className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+        <div>
+            <label htmlFor="newDueDate" className="block text-sm font-medium text-slate-300 mb-1">Due Date</label>
+            <input id="newDueDate" type="date" value={newDueDate} onChange={(e) => setNewDueDate(e.target.value)} className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors" />
+        </div>
+        <div>
+            <label htmlFor="newPriority" className="block text-sm font-medium text-slate-300 mb-1">Priority</label>
+            <select id="newPriority" value={newPriority} onChange={(e) => setNewPriority(e.target.value as TaskPriority)} className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors appearance-none">
+              {PRIORITIES.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            </select>
+        </div>
+      </div>
+      <div className="mb-4">
+        <button 
+            type="button" 
+            onClick={() => getAISubtaskSuggestions(newTaskTitle, newTaskDesc)}
+            disabled={isSuggestingSubtasks || !newTaskTitle.trim()}
+            className="flex items-center justify-center gap-2 w-full text-sm bg-purple-600 hover:bg-purple-500 text-white font-medium py-2 px-3 rounded-lg shadow transition-colors disabled:opacity-60"
+        >
+            <LightBulbIcon/> {isSuggestingSubtasks ? 'Thinking...' : 'Suggest Subtasks (AI)'}
+        </button>
+        {suggestedSubtasks.length > 0 && (
+            <div className="mt-2 p-3 bg-slate-700 rounded-md">
+                <p className="text-xs text-slate-400 mb-1">AI Suggestions (click to add to description, or create manually):</p>
+                <ul className="list-disc list-inside text-sm text-slate-200">
+                    {suggestedSubtasks.map((suggestion, index) => (
+                        <li key={index} className="cursor-pointer hover:text-sky-300" onClick={() => setNewTaskDesc(prev => `${prev}\n- ${suggestion}`.trim())}>
+                            {suggestion}
+                        </li>
+                    ))}
+                </ul>
+            </div>
+        )}
+      </div>
+      <button type="submit" disabled={!userId || isLoading} className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed">
+        <PlusIcon /> Add Task
+      </button>
+    </form>
+  );
+};
+
+// --- TaskCard Component ---
+interface TaskCardProps {
+  task: Task;
+  handleDeleteTask: (taskId: string) => Promise<void>;
+  onDragStart: (e: DragEvent<HTMLDivElement>, task: Task) => void;
+  draggedTask: Task | null;
+  onAddSubtask: (taskId: string, subtaskTitle: string) => Promise<void>;
+  onToggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onDeleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onUploadAttachment: (taskId: string, file: File) => Promise<void>;
+  onDeleteAttachment: (taskId: string, attachmentId: string, attachmentPath: string) => Promise<void>;
+  isUploadingAttachment: string | null; 
+}
+const TaskCard: FC<TaskCardProps> = ({ 
+    task, handleDeleteTask, onDragStart, draggedTask,
+    onAddSubtask, onToggleSubtask, onDeleteSubtask,
+    onUploadAttachment, onDeleteAttachment, isUploadingAttachment
+}) => {
+  const [newSubtaskTitle, setNewSubtaskTitle] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const getPriorityColor = (priority?: TaskPriority): string => {
+    switch (priority) {
+      case 'high': return 'border-red-500';
+      case 'medium': return 'border-yellow-500';
+      case 'low': return 'border-green-500';
+      default: return 'border-slate-600';
+    }
+  };
+  const handleAddSubtaskKeyPress = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && newSubtaskTitle.trim()) {
+      e.preventDefault(); 
+      onAddSubtask(task.id, newSubtaskTitle.trim());
+      setNewSubtaskTitle('');
+    }
+  };
+  const handleAddSubtaskClick = () => {
+    if (newSubtaskTitle.trim()) {
+      onAddSubtask(task.id, newSubtaskTitle.trim());
+      setNewSubtaskTitle('');
+    }
+  };
+
+  const handleFileSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (file) {
+      onUploadAttachment(task.id, file);
+      if(fileInputRef.current) fileInputRef.current.value = ""; 
+    }
+  };
+
+  return (
+    <div
+      key={task.id} draggable onDragStart={(e) => onDragStart(e, task)}
+      className={`p-4 bg-slate-700/70 rounded-lg shadow-md cursor-grab hover:bg-slate-600/80 transition-colors duration-200 border-l-4 ${getPriorityColor(task.priority)} ${draggedTask?.id === task.id ? 'opacity-50 ring-2 ring-sky-500' : ''}`}
+    >
+      <div className="flex justify-between items-start">
+        <h4 className="font-semibold text-slate-100 break-words flex-1">{task.title}</h4>
+        <button
+            onClick={() => handleDeleteTask(task.id)}
+            className="text-rose-400 hover:text-rose-300 transition-colors p-1 rounded-full hover:bg-rose-500/20 ml-2"
+            aria-label="Delete task"
+        > <TrashIcon className="w-5 h-5"/> </button>
+      </div>
+
+      {task.description && <p className="text-sm text-slate-300 mt-1 mb-2 break-words">{task.description}</p>}
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400 mb-3">
+        {task.dueDate && <span>Due: {new Date(task.dueDate + 'T00:00:00').toLocaleDateString()}</span>}
+        {task.priority && <span>Priority: <span className={`font-semibold ${
+            task.priority === 'high' ? 'text-red-400' :
+            task.priority === 'medium' ? 'text-yellow-400' :
+            'text-green-400'}`}>{task.priority.charAt(0).toUpperCase() + task.priority.slice(1)}</span>
+        </span>}
+      </div>
+
+      <div className="mt-3 border-t border-slate-600 pt-3">
+        <h5 className="text-xs font-semibold text-slate-400 mb-2">Subtasks:</h5>
+        {task.subtasks && task.subtasks.length > 0 && (
+          <ul className="space-y-1 mb-2">
+            {task.subtasks.map(subtask => (
+              <li key={subtask.id} className="flex items-center justify-between text-sm text-slate-200 group">
+                <label className="flex items-center cursor-pointer">
+                  <input 
+                    type="checkbox" 
+                    checked={subtask.completed} 
+                    onChange={() => onToggleSubtask(task.id, subtask.id)}
+                    className="mr-2 h-4 w-4 rounded border-slate-500 text-sky-500 focus:ring-sky-400 bg-slate-600"
+                  />
+                  <span className={`${subtask.completed ? 'line-through text-slate-400' : ''}`}>
+                    {subtask.title}
+                  </span>
+                </label>
+                <button 
+                    onClick={() => onDeleteSubtask(task.id, subtask.id)}
+                    className="text-rose-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded-full hover:bg-rose-500/20"
+                    aria-label="Delete subtask"
+                > <TrashIcon /> </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {(!task.subtasks || task.subtasks.length === 0) && (
+            <p className="text-xs text-slate-500 italic mb-2">No subtasks yet.</p>
+        )}
+        <div className="flex items-center mt-1">
+          <input 
+            type="text" 
+            value={newSubtaskTitle}
+            onChange={(e) => setNewSubtaskTitle(e.target.value)}
+            onKeyPress={handleAddSubtaskKeyPress}
+            placeholder="Add a subtask..."
+            className="flex-grow p-1.5 text-sm bg-slate-600 border border-slate-500 rounded-l-md focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors"
+          />
+          <button 
+            onClick={handleAddSubtaskClick}
+            className="p-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-r-md text-sm"
+            aria-label="Add subtask"
+          > <PlusIcon/> </button>
+        </div>
+      </div>
+
+      <div className="mt-3 border-t border-slate-600 pt-3">
+        <h5 className="text-xs font-semibold text-slate-400 mb-2 flex items-center"><PaperClipIcon /> Attachments:</h5>
+        {task.attachments && task.attachments.length > 0 && (
+          <ul className="space-y-1 mb-2">
+            {task.attachments.map(att => (
+              <li key={att.id} className="flex items-center justify-between text-sm text-slate-200 group bg-slate-600/50 p-1.5 rounded">
+                <a href={att.url} target="_blank" rel="noopener noreferrer" className="truncate hover:underline" title={att.name}>
+                  {att.name} <span className="text-xs text-slate-400">({att.type})</span>
+                </a>
+                <button 
+                    onClick={() => onDeleteAttachment(task.id, att.id, att.path)}
+                    className="text-rose-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded-full hover:bg-rose-500/20 ml-2"
+                    aria-label="Delete attachment"
+                > <TrashIcon /> </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="flex items-center mt-1">
+            <input type="file" ref={fileInputRef} onChange={handleFileSelect} className="hidden" id={`file-upload-${task.id}`} />
+            <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingAttachment === task.id}
+                className="flex items-center gap-1.5 p-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-md text-sm disabled:opacity-50"
+            >
+                <UploadIcon /> {isUploadingAttachment === task.id ? 'Uploading...' : 'Upload File'}
+            </button>
+        </div>
+      </div>
+
+      {task.timestamp && <p className="text-xs text-slate-500 mt-3 pt-2 border-t border-slate-600">Added: {new Date(task.timestamp.toDate()).toLocaleDateString()}</p>}
+    </div>
+  );
+};
+
+// --- Column Component ---
+interface ColumnProps {
+  column: ColumnType;
+  tasks: Task[];
+  handleDeleteTask: (taskId: string) => Promise<void>;
+  onDragStart: (e: DragEvent<HTMLDivElement>, task: Task) => void;
+  onDragOver: (e: DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: DragEvent<HTMLDivElement>, targetStatus: ColumnType['id']) => void;
+  draggedTask: Task | null;
+  onAddSubtask: (taskId: string, subtaskTitle: string) => Promise<void>;
+  onToggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onDeleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onUploadAttachment: (taskId: string, file: File) => Promise<void>;
+  onDeleteAttachment: (taskId: string, attachmentId: string, attachmentPath: string) => Promise<void>;
+  isUploadingAttachment: string | null;
+}
+const Column: FC<ColumnProps> = ({ 
+    column, tasks, handleDeleteTask, onDragStart, onDragOver, onDrop, draggedTask,
+    onAddSubtask, onToggleSubtask, onDeleteSubtask,
+    onUploadAttachment, onDeleteAttachment, isUploadingAttachment
+}) => {
+  const columnTasks = tasks.filter(task => task.status === column.id);
+  return (
+    <div className="bg-slate-800/60 backdrop-blur-sm p-5 rounded-xl shadow-xl min-h-[300px] flex flex-col"
+      onDragOver={onDragOver} onDrop={(e) => onDrop(e, column.id)} >
+      <h3 className="text-xl font-semibold mb-4 pb-2 border-b-2 border-slate-700 text-sky-400">{column.title}</h3>
+      <div className="flex-grow space-y-3 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-slate-800/50 pr-1">
+        {columnTasks.map(task => (
+          <TaskCard 
+            key={task.id} task={task} handleDeleteTask={handleDeleteTask}
+            onDragStart={onDragStart} draggedTask={draggedTask}
+            onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask}
+            onUploadAttachment={onUploadAttachment} onDeleteAttachment={onDeleteAttachment}
+            isUploadingAttachment={isUploadingAttachment}
+          />
+        ))}
+        {columnTasks.length === 0 && <p className="text-slate-500 text-sm italic">No tasks.</p>}
+      </div>
+    </div>
+  );
+};
+
+// --- BoardComponent (was Board) ---
+interface BoardComponentProps { // Renamed from BoardProps
+  tasks: Task[];
+  handleDeleteTask: (taskId: string) => Promise<void>;
+  onDragStart: (e: DragEvent<HTMLDivElement>, task: Task) => void;
+  onDragOver: (e: DragEvent<HTMLDivElement>) => void;
+  onDrop: (e: DragEvent<HTMLDivElement>, targetStatus: ColumnType['id']) => void;
+  draggedTask: Task | null;
+  onAddSubtask: (taskId: string, subtaskTitle: string) => Promise<void>;
+  onToggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onDeleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+  onUploadAttachment: (taskId: string, file: File) => Promise<void>;
+  onDeleteAttachment: (taskId: string, attachmentId: string, attachmentPath: string) => Promise<void>;
+  isUploadingAttachment: string | null;
+}
+const BoardComponent: FC<BoardComponentProps> = ({ 
+    tasks, handleDeleteTask, onDragStart, onDragOver, onDrop, draggedTask,
+    onAddSubtask, onToggleSubtask, onDeleteSubtask,
+    onUploadAttachment, onDeleteAttachment, isUploadingAttachment
+}) => (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      {COLUMNS.map(columnDef => (
+        <Column
+          key={columnDef.id} column={columnDef} tasks={tasks}
+          handleDeleteTask={handleDeleteTask} onDragStart={onDragStart}
+          onDragOver={onDragOver} onDrop={onDrop} draggedTask={draggedTask}
+          onAddSubtask={onAddSubtask} onToggleSubtask={onToggleSubtask} onDeleteSubtask={onDeleteSubtask}
+          onUploadAttachment={onUploadAttachment} onDeleteAttachment={onDeleteAttachment}
+          isUploadingAttachment={isUploadingAttachment}
+        />
+      ))}
+    </div>
+  );
+
+// --- FilterControls Component ---
+interface FilterControlsProps {
+    searchTerm: string;
+    setSearchTerm: (term: string) => void;
+    filterStatus: TaskStatus | 'all';
+    setFilterStatus: (status: TaskStatus | 'all') => void;
+    filterPriority: TaskPriority | 'all';
+    setFilterPriority: (priority: TaskPriority | 'all') => void;
+}
+const FilterControls: FC<FilterControlsProps> = ({
+    searchTerm, setSearchTerm,
+    filterStatus, setFilterStatus,
+    filterPriority, setFilterPriority
+}) => {
+    return (
+        <div className="mb-6 p-4 bg-slate-800/50 backdrop-blur-md rounded-xl shadow-lg max-w-4xl mx-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+            <div>
+                <label htmlFor="searchTerm" className="block text-sm font-medium text-slate-300 mb-1">Search Tasks</label>
+                <input
+                    id="searchTerm" type="text" placeholder="Search by title/description..."
+                    value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
+                    className="w-full p-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors"
+                />
+            </div>
+            <div>
+                <label htmlFor="filterStatus" className="block text-sm font-medium text-slate-300 mb-1">Filter by Status</label>
+                <select
+                    id="filterStatus" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value as TaskStatus | 'all')}
+                    className="w-full p-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors appearance-none"
+                >
+                    <option value="all">All Statuses</option>
+                    {COLUMNS.map(col => <option key={col.id} value={col.id}>{col.title}</option>)}
+                </select>
+            </div>
+            <div>
+                <label htmlFor="filterPriority" className="block text-sm font-medium text-slate-300 mb-1">Filter by Priority</label>
+                <select
+                    id="filterPriority" value={filterPriority} onChange={(e) => setFilterPriority(e.target.value as TaskPriority | 'all')}
+                    className="w-full p-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors appearance-none"
+                >
+                    <option value="all">All Priorities</option>
+                    {PRIORITIES.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+                </select>
+            </div>
+        </div>
+    );
+};
+
+// --- AuthFormComponent ---
+interface AuthFormProps {
+    auth: Auth | null;
+    setError: React.Dispatch<React.SetStateAction<string | null>>;
+}
+const AuthForm: FC<AuthFormProps> = ({ auth, setError }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isLogin, setIsLogin] = useState(true); 
+
+    const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+        e.preventDefault();
+        setError(null);
+        if (!auth) {
+            setError("Authentication service not available.");
+            return;
+        }
+        try {
+            if (isLogin) {
+                await signInWithEmailAndPassword(auth, email, password);
+            } else {
+                await createUserWithEmailAndPassword(auth, email, password);
+            }
+        } catch (err: any) {
+            setError(err.message || "Failed to authenticate.");
+        }
+    };
+
+    return (
+        <div className="max-w-md mx-auto mt-10 p-8 bg-slate-800/70 backdrop-blur-md rounded-xl shadow-2xl">
+            <h2 className="text-3xl font-bold text-center text-sky-400 mb-8">
+                {isLogin ? 'Login' : 'Sign Up'}
+            </h2>
+            <form onSubmit={handleSubmit}>
+                <div className="mb-4">
+                    <label htmlFor="email" className="block text-sm font-medium text-slate-300 mb-1">Email</label>
+                    <input type="email" id="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+                           className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors" />
+                </div>
+                <div className="mb-6">
+                    <label htmlFor="password"className="block text-sm font-medium text-slate-300 mb-1">Password</label>
+                    <input type="password" id="password" value={password} onChange={(e) => setPassword(e.target.value)} required
+                           className="w-full p-3 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors" />
+                </div>
+                <button type="submit"
+                        className="w-full bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-600 hover:to-blue-700 text-white font-semibold py-3 px-4 rounded-lg shadow-md hover:shadow-lg transition-all duration-300 ease-in-out transform hover:scale-105">
+                    {isLogin ? 'Login' : 'Sign Up'}
+                </button>
+            </form>
+            <button onClick={() => setIsLogin(!isLogin)}
+                    className="mt-6 text-center w-full text-sky-400 hover:text-sky-300 transition-colors">
+                {isLogin ? 'Need an account? Sign Up' : 'Already have an account? Login'}
+            </button>
+        </div>
+    );
+};
+
+// --- Dashboard Component ---
+interface DashboardStats {
+    tasksPerStatus: Record<TaskStatus, number>;
+    subtaskCompletionPercentage: number;
+}
+interface DashboardProps {
+    tasks: Task[]; 
+    activeBoardName?: string;
+}
+const Dashboard: FC<DashboardProps> = ({ tasks, activeBoardName }) => {
+    const [stats, setStats] = useState<DashboardStats | null>(null);
+
+    useEffect(() => {
+        if (tasks.length > 0) {
+            const tasksPerStatus = tasks.reduce((acc, task) => {
+                acc[task.status] = (acc[task.status] || 0) + 1;
+                return acc;
+            }, {} as Record<TaskStatus, number>);
+
+            let totalSubtasks = 0;
+            let completedSubtasks = 0;
+            tasks.forEach(task => {
+                (task.subtasks || []).forEach(sub => { // Ensure subtasks is treated as array
+                    totalSubtasks++;
+                    if (sub.completed) completedSubtasks++;
+                });
+            });
+            const subtaskCompletionPercentage = totalSubtasks > 0 ? Math.round((completedSubtasks / totalSubtasks) * 100) : 0;
+            
+            setStats({ tasksPerStatus, subtaskCompletionPercentage });
+        } else {
+            setStats(null);
+        }
+    }, [tasks]);
+
+    if (!stats) {
+        return <div className="text-center py-10 text-slate-400">No data available for dashboard{activeBoardName ? ` on board: ${activeBoardName}` : ''}.</div>;
+    }
+
+    return (
+        <div className="p-6 bg-slate-800/50 backdrop-blur-md rounded-xl shadow-2xl max-w-4xl mx-auto">
+            <h2 className="text-3xl font-bold text-sky-300 mb-6 text-center">
+                Dashboard {activeBoardName && <span className="text-xl text-slate-400">- {activeBoardName}</span>}
+            </h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="p-4 bg-slate-700 rounded-lg shadow">
+                    <h3 className="text-lg font-semibold text-sky-400 mb-2">Tasks per Status</h3>
+                    <ul>
+                        {(Object.keys(stats.tasksPerStatus) as TaskStatus[]).map(status => (
+                            <li key={status} className="flex justify-between">
+                                <span>{status.charAt(0).toUpperCase() + status.slice(1)}:</span>
+                                <span>{stats.tasksPerStatus[status]}</span>
+                            </li>
+                        ))}
+                    </ul>
+                    <p className="text-xs text-slate-500 mt-2">(Chart.js/Recharts bar chart here)</p>
+                </div>
+                <div className="p-4 bg-slate-700 rounded-lg shadow">
+                    <h3 className="text-lg font-semibold text-sky-400 mb-2">Subtask Completion</h3>
+                    <p className="text-3xl font-bold">{stats.subtaskCompletionPercentage}%</p>
+                    <p className="text-xs text-slate-500 mt-2">(Chart.js/Recharts donut chart here)</p>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// --- BoardView Component ---
+interface BoardViewProps {
+    db: Firestore;
+    storage: Storage;
+    currentUser: User;
+    appId: string;
+    activeBoard: BoardDoc; 
+    tasks: Task[]; 
+    setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+    setError: React.Dispatch<React.SetStateAction<string | null>>;
+    handleAddTask: (e: FormEvent<HTMLFormElement>) => Promise<void>;
+    getAISubtaskSuggestions: (taskTitle: string, taskDesc: string) => Promise<void>;
+    isSuggestingSubtasks: boolean;
+    suggestedSubtasks: string[];
+    setSuggestedSubtasks: React.Dispatch<React.SetStateAction<string[]>>;
+    handleDeleteTask: (taskId: string) => Promise<void>;
+    handleTaskStatusUpdate: (taskId: string, newStatus: TaskStatus) => Promise<void>;
+    onAddSubtask: (taskId: string, subtaskTitle: string) => Promise<void>;
+    onToggleSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+    onDeleteSubtask: (taskId: string, subtaskId: string) => Promise<void>;
+    onUploadAttachment: (taskId: string, file: File) => Promise<void>;
+    onDeleteAttachment: (taskId: string, attachmentId: string, attachmentPath: string) => Promise<void>;
+    isUploadingAttachment: string | null;
+    isLoading: boolean; 
+    newTaskTitle: string; setNewTaskTitle: React.Dispatch<React.SetStateAction<string>>;
+    newTaskDesc: string; setNewTaskDesc: React.Dispatch<React.SetStateAction<string>>;
+    newDueDate: string; setNewDueDate: React.Dispatch<React.SetStateAction<string>>;
+    newPriority: TaskPriority; setNewPriority: React.Dispatch<React.SetStateAction<TaskPriority>>;
+    onDragStart: (e: DragEvent<HTMLDivElement>, task: Task) => void;
+    onDragOver: (e: DragEvent<HTMLDivElement>) => void;
+    onDrop: (e: DragEvent<HTMLDivElement>, targetStatus: TaskStatus) => void;
+    draggedTask: Task | null;
+    searchTerm: string; setSearchTerm: React.Dispatch<React.SetStateAction<string>>;
+    filterStatus: TaskStatus | 'all'; setFilterStatus: React.Dispatch<React.SetStateAction<TaskStatus | 'all'>>;
+    filterPriority: TaskPriority | 'all'; setFilterPriority: React.Dispatch<React.SetStateAction<TaskPriority | 'all'>>;
+}
+
+const BoardView: FC<BoardViewProps> = (props) => {
+    const { 
+        tasks, activeBoard, isLoading, error, setError,
+        newTaskTitle, setNewTaskTitle, newTaskDesc, setNewTaskDesc, newDueDate, setNewDueDate, newPriority, setNewPriority,
+        handleAddTask, getAISubtaskSuggestions, isSuggestingSubtasks, suggestedSubtasks, setSuggestedSubtasks,
+        handleDeleteTask, handleTaskStatusUpdate, onAddSubtask, onToggleSubtask, onDeleteSubtask,
+        onUploadAttachment, onDeleteAttachment, isUploadingAttachment,
+        onDragStart, onDragOver, onDrop, draggedTask,
+        searchTerm, setSearchTerm, filterStatus, setFilterStatus, filterPriority, setFilterPriority,
+        currentUser, db // Make sure db is passed if used directly, or get from context/props
+     } = props;
+
+    const [inviteEmail, setInviteEmail] = useState(''); // Changed to use for UID for simplified demo
+    const [boardMembers, setBoardMembers] = useState<BoardMember[]>([]);
+
+    useEffect(() => {
+        const membersArray: BoardMember[] = Object.entries(activeBoard.members).map(([uid, role]) => ({
+            uid,
+            email: uid === activeBoard.ownerId ? `${currentUser?.email} (Owner)` : `User (${uid.substring(0,5)}...)`, 
+            role
+        }));
+        setBoardMembers(membersArray);
+    }, [activeBoard.members, activeBoard.ownerId, currentUser?.email]);
+
+
+    const handleInviteUser = async () => {
+        if (!inviteEmail.trim() || !db || !currentUser) return; // db is now from props or getFirestore()
+        setError(null);
+        const invitedUserUID = inviteEmail; 
+
+        if (activeBoard.members[invitedUserUID]) {
+            setError("User is already a member or invited.");
+            return;
+        }
+        const boardRef = doc(db, "boards", activeBoard.id);
+        try {
+            await updateDoc(boardRef, {
+                [`members.${invitedUserUID}`]: 'viewer' 
+            });
+            setInviteEmail('');
+            alert(`User ${invitedUserUID} invited as viewer (simulated). Firestore updated.`);
+        } catch (err: any) {
+            console.error("Error inviting user:", err);
+            setError(`Failed to invite user: ${err.message}`);
+        }
+    };
+    
+    const displayedTasks = useMemo(() => { 
+        return tasks.filter(task => {
+            const searchMatch = searchTerm ? 
+                task.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                (task.description && task.description.toLowerCase().includes(searchTerm.toLowerCase()))
+                : true;
+            const statusMatch = filterStatus === 'all' || task.status === filterStatus;
+            const priorityMatch = filterPriority === 'all' || task.priority === filterPriority;
+            return searchMatch && statusMatch && priorityMatch;
+        });
+    }, [tasks, searchTerm, filterStatus, filterPriority]);
+
+    return (
+        <>
+            <div className="mb-6 p-4 bg-slate-800/60 backdrop-blur-sm rounded-xl shadow-lg max-w-4xl mx-auto">
+                <h3 className="text-xl font-semibold text-sky-400 mb-3">Manage Board: {activeBoard.name}</h3>
+                <div className="flex items-center gap-2 mb-3">
+                    <input 
+                        type="text" 
+                        value={inviteEmail}
+                        onChange={(e) => setInviteEmail(e.target.value)}
+                        placeholder="Enter User ID to invite" 
+                        className="flex-grow p-2 bg-slate-700 border border-slate-600 rounded-l-md text-sm"
+                    />
+                    <button onClick={handleInviteUser} className="p-2 bg-sky-600 hover:bg-sky-500 text-white rounded-r-md text-sm">Invite User</button>
+                </div>
+                <div>
+                    <h4 className="text-sm font-medium text-slate-300 mb-1">Members:</h4>
+                    <ul className="text-xs text-slate-400 list-disc list-inside">
+                        {boardMembers.map(member => (
+                            <li key={member.uid}>{member.email || member.uid} - {member.role}</li>
+                        ))}
+                    </ul>
+                </div>
+            </div>
+            <TaskForm 
+                handleAddTask={handleAddTask}
+                getAISubtaskSuggestions={getAISubtaskSuggestions}
+                isSuggestingSubtasks={isSuggestingSubtasks}
+                suggestedSubtasks={suggestedSubtasks}
+                setSuggestedSubtasks={setSuggestedSubtasks}
+                newTaskTitle={newTaskTitle} setNewTaskTitle={setNewTaskTitle}
+                newTaskDesc={newTaskDesc} setNewTaskDesc={setNewTaskDesc}
+                newDueDate={newDueDate} setNewDueDate={setNewDueDate}
+                newPriority={newPriority} setNewPriority={setNewPriority}
+                userId={currentUser.uid} 
+                isLoading={isLoading}
+             />
+            <FilterControls 
+                searchTerm={searchTerm} setSearchTerm={setSearchTerm}
+                filterStatus={filterStatus} setFilterStatus={setFilterStatus}
+                filterPriority={filterPriority} setFilterPriority={setFilterPriority}
+            />
+            {isLoading && displayedTasks.length === 0 && <div className="text-center py-10 text-slate-400">Loading tasks for {activeBoard.name}...</div>}
+            {!isLoading && displayedTasks.length === 0 && (searchTerm || filterStatus !== 'all' || filterPriority !== 'all') &&
+            <div className="text-center py-10 text-slate-400">No tasks match your current filters on this board.</div>
+            }
+            {!isLoading && tasks.length === 0 && !error && !searchTerm && filterStatus === 'all' && filterPriority === 'all' &&
+            <div className="text-center py-10 text-slate-400">No tasks yet on this board. Add one above!</div>
+            }
+            <BoardComponent 
+                tasks={displayedTasks} 
+                handleDeleteTask={handleDeleteTask}
+                onDragStart={onDragStart} onDragOver={onDragOver}
+                onDrop={onDrop} draggedTask={draggedTask}
+                onAddSubtask={onAddSubtask} 
+                onToggleSubtask={onToggleSubtask}
+                onDeleteSubtask={onDeleteSubtask}
+                onUploadAttachment={onUploadAttachment}
+                onDeleteAttachment={onDeleteAttachment}
+                isUploadingAttachment={isUploadingAttachment}
+            />
+        </>
+    );
+};
+
+// --- App Component (Main) ---
+const App: FC = () => {
+  const [db, setDb] = useState<Firestore | null>(null);
+  const [storage, setStorage] = useState<Storage | null>(null); 
+  const [auth, setAuth] = useState<Auth | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'kanban-app-default';
+
+  const [boards, setBoards] = useState<BoardDoc[]>([]);
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
+  const [newBoardName, setNewBoardName] = useState('');
+  const [showDashboard, setShowDashboard] = useState<boolean>(false);
+  
+  const [tasks, setTasks] = useState<Task[]>([]); 
+  const [newTaskTitle, setNewTaskTitle] = useState<string>('');
+  const [newTaskDesc, setNewTaskDesc] = useState<string>('');
+  const [newDueDate, setNewDueDate] = useState<string>('');
+  const [newPriority, setNewPriority] = useState<TaskPriority>('medium');
+
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoadingBoards, setIsLoadingBoards] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState<string | null>(null);
+  const [isSuggestingSubtasks, setIsSuggestingSubtasks] = useState<boolean>(false);
+  const [suggestedSubtasks, setSuggestedSubtasks] = useState<string[]>([]);
+
+  const [draggedTask, setDraggedTask] = useState<Task | null>(null);
+  const confettiCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [showConfetti, setShowConfetti] = useState<boolean>(false);
+
+  const [searchTerm, setSearchTerm] = useState<string>('');
+  const [filterStatus, setFilterStatus] = useState<TaskStatus | 'all'>('all');
+  const [filterPriority, setFilterPriority] = useState<TaskPriority | 'all'>('all');
+
+  useEffect(() => { 
+    let firebaseConfig: any; 
+    try {
+      const configString = typeof __firebase_config !== 'undefined' ? __firebase_config : '{}';
+      firebaseConfig = JSON.parse(configString);
+      if (Object.keys(firebaseConfig).length === 0) {
+        firebaseConfig = { apiKey: "p", authDomain: "p.fApp.com", projectId: "p", storageBucket: "p.appspot.com" };
+      }
+      if (!firebaseConfig.storageBucket && firebaseConfig.projectId) {
+        firebaseConfig.storageBucket = `${firebaseConfig.projectId}.appspot.com`;
+      } else if (!firebaseConfig.storageBucket) {
+        firebaseConfig.storageBucket = "placeholder.appspot.com";
+      }
+    } catch (e) {
+      firebaseConfig = { apiKey: "p", authDomain: "p.fApp.com", projectId: "p", storageBucket: "p.appspot.com" };
+    }
+    
+    setLogLevel('debug');
+    const appInstance: FirebaseApp = initializeApp(firebaseConfig);
+    setDb(getFirestore(appInstance));
+    setAuth(getAuth(appInstance));
+    setStorage(getStorage(appInstance));
+
+    const unsubscribeAuth: Unsubscribe = onAuthStateChanged(getAuth(appInstance), async (user) => {
+        setCurrentUser(user);
+        setIsAuthReady(true);
+        if (!user && typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+            try { 
+                await signInWithCustomToken(getAuth(appInstance), __initial_auth_token); 
+            } catch (customTokenError) {
+                console.error("Error with custom token, trying anonymous:", customTokenError);
+                try { 
+                    await signInAnonymously(getAuth(appInstance)); 
+                } catch(anonError){ 
+                    console.error("Anonymous sign-in failed:", anonError); 
+                }
+            }
+        } else if (!user) {
+             setBoards([]); setActiveBoardId(null); setTasks([]); // Clear data if no user and no token
+        }
+    });
+    return () => unsubscribeAuth();
+  }, [appId]);
+
+  useEffect(() => {
+    if (!isAuthReady || !db || !currentUser?.uid) {
+      if(isAuthReady && !currentUser) { setBoards([]); setIsLoadingBoards(false); setTasks([]); }
+      return;
+    }
+    setIsLoadingBoards(true);
+    const boardsQuery = query(
+        collection(db, "boards"),
+        where(`members.${currentUser.uid}`, "in", ['owner', 'editor', 'viewer'])
+    );
+
+    const unsubscribeBoards = onSnapshot(boardsQuery, (querySnapshot) => {
+        const userBoards = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as BoardDoc));
+        setBoards(userBoards);
+        if (userBoards.length > 0 && (!activeBoardId || !userBoards.find(b => b.id === activeBoardId))) {
+            setActiveBoardId(userBoards[0].id); 
+        } else if (userBoards.length === 0) {
+            setActiveBoardId(null); 
+            setTasks([]);
+        }
+        setIsLoadingBoards(false);
+        setError(null);
+    }, (err) => {
+        console.error("Error fetching boards:", err);
+        let detailedError = "Failed to load boards.";
+        if ((err as any).code === 'permission-denied' || err.message.toLowerCase().includes("permission")) {
+            detailedError += " This is often due to Firestore security rules. Ensure rules allow querying the 'boards' collection based on the 'members' field for the authenticated user.";
+        }
+        setError(detailedError);
+        setIsLoadingBoards(false);
+    });
+    return () => unsubscribeBoards();
+  }, [db, currentUser, isAuthReady, activeBoardId]); // Added activeBoardId to potentially re-evaluate if it changes elsewhere
+
+  useEffect(() => {
+    if (!isAuthReady || !db || !currentUser?.uid || !activeBoardId) {
+      if (activeBoardId === null && isAuthReady && currentUser) { 
+          setTasks([]);
+          setIsLoading(false);
+      }
+      return;
+    }
+    setIsLoading(true);
+    const tasksCollectionPath = `/boards/${activeBoardId}/tasks`;
+    const q = collection(db, tasksCollectionPath);
+    const unsubscribeTasks = onSnapshot(q, (querySnapshot) => {
+      const tasksData: Task[] = querySnapshot.docs.map(docSnapshot => {
+        const data = docSnapshot.data();
+        return { 
+            id: docSnapshot.id,
+            boardId: data.boardId || activeBoardId, 
+            title: data.title || 'Untitled Task',
+            description: data.description || '',
+            status: data.status || 'todo',
+            timestamp: data.timestamp,
+            dueDate: data.dueDate || '',
+            priority: data.priority || 'medium',
+            subtasks: data.subtasks || [], 
+            attachments: data.attachments || [],
+            createdBy: data.createdBy || ''
+        } as Task;
+      });
+      tasksData.sort((a, b) => (a.timestamp?.toDate()?.getTime() || 0) - (b.timestamp?.toDate()?.getTime() || 0));
+      setTasks(tasksData);
+      setIsLoading(false); setError(null);
+    }, (err: Error) => {
+      setError(`Failed to load tasks for board: ${activeBoardId}. ${err.message}`); setIsLoading(false);
+       if ((err as any).code === 'permission-denied') {
+         setError(`Permission Denied for tasks on this board. Check Firestore security rules for path: ${tasksCollectionPath}`);
+       }
+    });
+    return () => unsubscribeTasks();
+  }, [db, currentUser, isAuthReady, activeBoardId]);
+
+
+  const handleCreateBoard = async () => {
+    if (!newBoardName.trim() || !db || !currentUser?.uid) {
+        setError("Board name is required and you must be logged in.");
+        return;
+    }
+    const newBoardId = crypto.randomUUID();
+    const boardRef = doc(db, "boards", newBoardId);
+    const newBoardDoc: BoardDoc = {
+        id: newBoardId,
+        name: newBoardName.trim(),
+        ownerId: currentUser.uid,
+        members: { [currentUser.uid]: 'owner' },
+        createdAt: Timestamp.now()
+    };
+    try {
+        await setDoc(boardRef, newBoardDoc);
+        setNewBoardName('');
+        setActiveBoardId(newBoardId); 
+        setError(null);
+    } catch (err: any) {
+        setError(`Failed to create board: ${err.message}`);
+    }
+  };
+
+  const handleAddTask = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
+    e.preventDefault();
+    if (!newTaskTitle.trim() || !db || !currentUser?.uid || !activeBoardId) { 
+        setError("Task title, user, and active board are required."); return; 
+    }
+    const newTaskPayload: Omit<Task, 'id' | 'timestamp'> & { timestamp: any } = {
+      boardId: activeBoardId, 
+      title: newTaskTitle.trim(), description: newTaskDesc.trim(), status: 'todo',
+      timestamp: serverTimestamp(), dueDate: newDueDate || undefined, priority: newPriority,
+      subtasks: [], attachments: [], createdBy: currentUser.uid,
+    };
+    try {
+      const newTaskId = crypto.randomUUID();
+      const taskRef = doc(db, `/boards/${activeBoardId}/tasks`, newTaskId); 
+      await setDoc(taskRef, newTaskPayload);
+      setNewTaskTitle(''); setNewTaskDesc(''); setNewDueDate(''); setNewPriority('medium'); setSuggestedSubtasks([]);
+      setError(null);
+    } catch (error: any) { setError(`Error adding task: ${error.message}`); }
+  };
+
+  const handleDeleteTask = async (taskId: string): Promise<void> => {
+    if (!db || !currentUser?.uid || !storage || !activeBoardId) return;
+    try {
+      const taskToDelete = tasks.find(t => t.id === taskId);
+      if (taskToDelete?.attachments?.length) {
+        for (const att of taskToDelete.attachments) {
+          if (att.path) { await deleteObject(storageRef(storage, att.path)).catch(console.error); }
+        }
+      }
+      await deleteDoc(doc(db, `/boards/${activeBoardId}/tasks`, taskId));
+      setError(null);
+    } catch (error: any) { setError(`Error deleting task: ${error.message}`); }
+  };
+
+  const handleTaskStatusUpdate = async (taskId: string, newStatus: TaskStatus): Promise<void> => {
+    if (!db || !currentUser?.uid || !activeBoardId) return;
+    try {
+      await updateDoc(doc(db, `/boards/${activeBoardId}/tasks`, taskId), { status: newStatus });
+      if (newStatus === 'done') setShowConfetti(true);
+      setError(null);
+    } catch (error: any) { setError(`Error updating task: ${error.message}`); }
+  };
+
+  const handleLogout = async () => {
+    if (!auth) return;
+    try { await signOut(auth); setTasks([]); setActiveBoardId(null); setBoards([]); setError(null); }
+    catch (err: any) { setError(err.message || "Failed to logout."); }
+  };
+
+  const handleAddSubtask = async (taskId: string, subtaskTitle: string): Promise<void> => {
+    if (!db || !currentUser?.uid || !activeBoardId) return;
+    const taskRef = doc(db, `/boards/${activeBoardId}/tasks`, taskId);
+    const parentTask = tasks.find(t => t.id === taskId);
+    if (!parentTask) { setError("Parent task not found."); return; }
+    const newSubtask: Subtask = { id: crypto.randomUUID(), title: subtaskTitle, completed: false };
+    const updatedSubtasks = [...(parentTask.subtasks || []), newSubtask];
+    try { await updateDoc(taskRef, { subtasks: updatedSubtasks }); setError(null); }
+    catch (err: any) { setError(`Error adding subtask: ${err.message}`); }
+  };
+  const handleToggleSubtask = async (taskId: string, subtaskId: string): Promise<void> => {
+    if (!db || !currentUser?.uid || !activeBoardId) return;
+    const taskRef = doc(db, `/boards/${activeBoardId}/tasks`, taskId);
+    const parentTask = tasks.find(t => t.id === taskId);
+    if (!parentTask || !parentTask.subtasks) { setError("Task/subtasks not found."); return; }
+    const updatedSubtasks = parentTask.subtasks.map(sub => sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub);
+    try { await updateDoc(taskRef, { subtasks: updatedSubtasks }); setError(null); }
+    catch (err: any) { setError(`Error toggling subtask: ${err.message}`); }
+  };
+  const handleDeleteSubtask = async (taskId: string, subtaskId: string): Promise<void> => {
+    if (!db || !currentUser?.uid || !activeBoardId) return;
+    const taskRef = doc(db, `/boards/${activeBoardId}/tasks`, taskId);
+    const parentTask = tasks.find(t => t.id === taskId);
+    if (!parentTask || !parentTask.subtasks) { setError("Task/subtasks not found."); return; }
+    const updatedSubtasks = parentTask.subtasks.filter(sub => sub.id !== subtaskId);
+    try { await updateDoc(taskRef, { subtasks: updatedSubtasks }); setError(null); }
+    catch (err: any) { setError(`Error deleting subtask: ${err.message}`); }
+  };
+
+  const handleUploadAttachment = async (taskId: string, file: File): Promise<void> => {
+    if (!storage || !db || !currentUser?.uid || !activeBoardId) { setError("Services not available."); return; }
+    setIsUploadingAttachment(taskId); setError(null);
+    const attachmentPath = `boards/${activeBoardId}/tasks/${taskId}/attachments/${Date.now()}_${file.name}`;
+    const fileStorageRef = storageRef(storage, attachmentPath);
+    try {
+        await uploadBytes(fileStorageRef, file);
+        const downloadURL = await getDownloadURL(fileStorageRef);
+        const parentTask = tasks.find(t => t.id === taskId);
+        if (!parentTask) throw new Error("Parent task not found.");
+        const newAttachment: Attachment = {
+            id: crypto.randomUUID(), name: file.name, url: downloadURL,
+            type: file.type, createdAt: Timestamp.now(), path: attachmentPath,
+        };
+        const updatedAttachments = [...(parentTask.attachments || []), newAttachment];
+        const taskDocRef = doc(db, `/boards/${activeBoardId}/tasks`, taskId);
+        await updateDoc(taskDocRef, { attachments: updatedAttachments });
+    } catch (err: any) { setError(`Upload failed: ${err.message}`); }
+    finally { setIsUploadingAttachment(null); }
+  };
+
+  const handleDeleteAttachment = async (taskId: string, attachmentId: string, attachmentPath: string): Promise<void> => {
+    if (!storage || !db || !currentUser?.uid || !activeBoardId) { setError("Services not available."); return; }
+    setError(null);
+    const fileStorageRef = storageRef(storage, attachmentPath);
+    try {
+        await deleteObject(fileStorageRef);
+        const parentTask = tasks.find(t => t.id === taskId);
+        if (!parentTask || !parentTask.attachments) throw new Error("Task/attachments not found.");
+        const updatedAttachments = parentTask.attachments.filter(att => att.id !== attachmentId);
+        const taskDocRef = doc(db, `/boards/${activeBoardId}/tasks`, taskId); 
+        await updateDoc(taskDocRef, { attachments: updatedAttachments });
+    } catch (err: any) { setError(`Delete failed: ${err.message}`); }
+  };
+
+  const handleGetAISubtaskSuggestions = async (taskTitle: string, taskDesc: string): Promise<void> => {
+    if (!taskTitle.trim()) { setError("Please enter a task title to get AI suggestions."); return; }
+    setIsSuggestingSubtasks(true); setError(null); setSuggestedSubtasks([]);
+    const prompt = `Given the primary task titled "${taskTitle}" ${taskDesc ? `with description "${taskDesc}"` : ''}, suggest 3 to 5 concise, actionable subtasks. Return the subtasks as a JSON array of strings. For example: ["Subtask 1", "Subtask 2", "Subtask 3"]`;
+    let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+    const payload = { contents: chatHistory, generationConfig: { responseMimeType: "application/json", responseSchema: { type: "ARRAY", items: { type: "STRING" }}}};
+    const apiKey = ""; 
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    try {
+        const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)});
+        if (!response.ok) { const errorData = await response.json(); throw new Error(`AI API request failed: ${response.status} ${response.statusText}. ${errorData?.error?.message || ''}`); }
+        const result = await response.json();
+        if (result.candidates?.[0]?.content?.parts?.[0]?.text) {
+            const jsonText = result.candidates[0].content.parts[0].text;
+            try {
+                const suggestionsArray = JSON.parse(jsonText);
+                if (Array.isArray(suggestionsArray) && suggestionsArray.every(item => typeof item === 'string')) {
+                    setSuggestedSubtasks(suggestionsArray.slice(0,5)); 
+                } else { throw new Error("AI response was not a valid array of strings."); }
+            } catch (parseError) { setError("Received invalid suggestions from AI."); setSuggestedSubtasks([jsonText.substring(0, 200) + "... (raw)"]); }
+        } else { setError("No suggestions received from AI."); }
+    } catch (err: any) { setError(`Failed to get AI suggestions: ${err.message}`); }
+    finally { setIsSuggestingSubtasks(false); }
+  };
+
+  const onDragStart = (e: DragEvent<HTMLDivElement>, task: Task): void => { e.dataTransfer.setData('taskId', task.id); setDraggedTask(task); };
+  const onDragOver = (e: DragEvent<HTMLDivElement>): void => e.preventDefault();
+  const onDrop = (e: DragEvent<HTMLDivElement>, targetStatus: TaskStatus): void => {
+    e.preventDefault();
+    const taskId = e.dataTransfer.getData('taskId');
+    if (taskId) handleTaskStatusUpdate(taskId, targetStatus);
+    setDraggedTask(null);
+  };
+  useEffect(() => { /* Confetti effect */ }, [showConfetti]);
+  const handleExportCSV = () => { /* CSV Export logic */ };
+  const handleExportPDF = () => { /* PDF Export logic (placeholder) */ };
+
+  const activeBoard = useMemo(() => boards.find(b => b.id === activeBoardId), [boards, activeBoardId]);
+  
+  if (!isAuthReady) { return <div className="flex items-center justify-center min-h-screen bg-slate-800 text-white">Initializing App...</div>; }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-slate-800 text-white p-4 sm:p-8 font-sans">
+      {showConfetti && <canvas ref={confettiCanvasRef} className="fixed top-0 left-0 w-full h-full pointer-events-none z-50" />}
+      <header className="mb-6 text-center relative">
+        <h1 className="text-4xl sm:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-sky-400 to-blue-500">Kanban Task Tracker</h1>
+        {currentUser && (
+            <div className="absolute top-0 right-0 mt-1 mr-1 sm:mt-0 sm:mr-0 flex items-center space-x-2">
+                <button onClick={() => setShowDashboard(!showDashboard)} className="flex items-center gap-1 bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-2 px-3 rounded-lg shadow transition-colors text-sm"><ChartBarIcon/> {showDashboard ? 'Board View' : 'Dashboard'}</button>
+                <button onClick={handleExportCSV} className="flex items-center gap-1 bg-blue-600 hover:bg-blue-500 text-white font-medium py-2 px-3 rounded-lg shadow transition-colors text-sm"><DocumentArrowDownIcon/> CSV</button>
+                <button onClick={handleExportPDF} className="flex items-center gap-1 bg-red-600 hover:bg-red-500 text-white font-medium py-2 px-3 rounded-lg shadow transition-colors text-sm"><DocumentArrowDownIcon/> PDF</button>
+                <button onClick={handleLogout} className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white font-medium py-2 px-3 rounded-lg shadow transition-colors text-sm"><LogoutIcon /> Logout</button>
+            </div>
+        )}
+        {currentUser?.email && <p className="text-xs text-slate-400 mt-1">Logged in as: {currentUser.email}</p>}
+        {error && <div className="mt-2 p-3 bg-red-500/20 text-red-300 border border-red-500 rounded-md text-sm max-w-xl mx-auto">{error}</div>}
+      </header>
+
+      {!currentUser ? (
+        <AuthForm auth={auth} setError={setError} />
+      ) : (
+        <>
+            <div className="mb-6 p-4 bg-slate-800/60 backdrop-blur-sm rounded-xl shadow-lg max-w-4xl mx-auto">
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                    <div className="flex-grow">
+                        <label htmlFor="boardSelector" className="block text-sm font-medium text-slate-300 mb-1">Select Board:</label>
+                        <select 
+                            id="boardSelector" value={activeBoardId || ''} 
+                            onChange={(e) => { setActiveBoardId(e.target.value); setShowDashboard(false); /* Switch to board view on select */}}
+                            disabled={isLoadingBoards || boards.length === 0}
+                            className="w-full p-2.5 bg-slate-700 border border-slate-600 rounded-lg focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors appearance-none"
+                        >
+                            {isLoadingBoards && <option>Loading boards...</option>}
+                            {!isLoadingBoards && boards.length === 0 && <option>No boards found. Create one!</option>}
+                            {boards.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                        </select>
+                    </div>
+                    <div className="flex-shrink-0 w-full sm:w-auto">
+                        <label htmlFor="newBoardName" className="block text-sm font-medium text-slate-300 mb-1 sm:hidden">Or Create New:</label>
+                        <div className="flex">
+                        <input 
+                            type="text" id="newBoardName" value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)}
+                            placeholder="New board name..."
+                            className="p-2.5 bg-slate-700 border border-slate-600 rounded-l-lg focus:ring-1 focus:ring-sky-500 focus:border-sky-500 outline-none transition-colors flex-grow sm:flex-grow-0"
+                        />
+                        <button onClick={handleCreateBoard} className="p-2.5 bg-green-600 hover:bg-green-500 text-white rounded-r-lg text-sm flex items-center gap-1"><PlusIcon/> Create</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {showDashboard && activeBoard ? (
+                <Dashboard tasks={tasks} activeBoardName={activeBoard.name}/>
+            ) : activeBoard && db && storage && currentUser ? ( // Ensure all required props for BoardView are available
+                <BoardView
+                    db={db} storage={storage} currentUser={currentUser} appId={appId} activeBoard={activeBoard}
+                    tasks={tasks} setTasks={setTasks} setError={setError} isLoading={isLoading}
+                    handleAddTask={handleAddTask}
+                    getAISubtaskSuggestions={handleGetAISubtaskSuggestions}
+                    isSuggestingSubtasks={isSuggestingSubtasks}
+                    suggestedSubtasks={suggestedSubtasks}
+                    setSuggestedSubtasks={setSuggestedSubtasks}
+                    handleDeleteTask={handleDeleteTask} handleTaskStatusUpdate={handleTaskStatusUpdate}
+                    onAddSubtask={handleAddSubtask} onToggleSubtask={handleToggleSubtask} onDeleteSubtask={handleDeleteSubtask}
+                    onUploadAttachment={handleUploadAttachment} onDeleteAttachment={handleDeleteAttachment}
+                    isUploadingAttachment={isUploadingAttachment}
+                    newTaskTitle={newTaskTitle} setNewTaskTitle={setNewTaskTitle}
+                    newTaskDesc={newTaskDesc} setNewTaskDesc={setNewTaskDesc}
+                    newDueDate={newDueDate} setNewDueDate={setNewDueDate}
+                    newPriority={newPriority} setNewPriority={setNewPriority}
+                    onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop} draggedTask={draggedTask}
+                    searchTerm={searchTerm} setSearchTerm={setSearchTerm}
+                    filterStatus={filterStatus} setFilterStatus={setFilterStatus}
+                    filterPriority={filterPriority} setFilterPriority={setFilterPriority}
+                />
+            ) : (
+                <div className="text-center py-10 text-slate-400">
+                    {isLoadingBoards || isLoading ? "Loading..." : "No board selected or available. Please create or select a board."}
+                </div>
+            )}
+        </>
+      )}
+      
+      <style>{`
+        .scrollbar-thin { scrollbar-width: thin; scrollbar-color: #334155 transparent; }
+        .scrollbar-thin::-webkit-scrollbar { width: 8px; }
+        .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+        .scrollbar-thin::-webkit-scrollbar-thumb { background-color: #334155; border-radius: 20px; border: 3px solid transparent; }
+      `}</style>
+    </div>
+  );
+};
+
+export default App;
