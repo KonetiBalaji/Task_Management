@@ -3,8 +3,6 @@ import { Task, TaskStatus, Subtask } from '../types';
 import { COLUMNS } from '../constants';
 import TaskCard from './TaskCard';
 import TaskForm from './TaskForm';
-import { db } from '../config/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 
 interface BoardProps {

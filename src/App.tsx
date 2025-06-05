@@ -21,7 +21,7 @@ function App() {
   const [suggestedSubtasks, setSuggestedSubtasks] = React.useState<string[]>([]);
   const [isSuggestingSubtasks, setIsSuggestingSubtasks] = React.useState(false);
   // Add state for attachment uploads if needed
-  const [isUploadingAttachment, setIsUploadingAttachment] = React.useState<string | null>(null);
+  const [isUploadingAttachment] = React.useState<string | null>(null);
 
   const totalLoading = authLoading || boardLoading || taskLoading;
   const totalError = boardError || taskError;
